@@ -9,24 +9,19 @@
 
 // Raspberry Pi Mosquitto MQTT Broker
 #define MQTT_HOST "192.168.1.30"
-// For a cloud MQTT broker, type the domain name
-//#define MQTT_HOST "example.com"
 #define MQTT_PORT 1883
 
-// Temperature MQTT Topics
-#define MQTT_PUB_LUX "outdoor/lux"
-#define MQTT_PUB_TEMP "outdoor/temperature"
-#define MQTT_PUB_HUM "outdoor/humidity"
-#define MQTT_PUB_PRES "outdoor/pressure"
-#define MQTT_PUB_RAIN "outdoor/rain"
-#define MQTT_PUB_GAS "outdoor/gas"
-#define MQTT_PUB_LIGHTNING "outdoor/lightning/events"
-#define MQTT_PUB_LIGHTNING_DIST "outdoor/lightning/distance"
+#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP 60        /* Time ESP32 will go to sleep (in seconds) */
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 Station* station;
+
+long beginCode;
+float voltagem;
+float valorPin;
 
 void reconnect() {
   // Loop until we're reconnected
@@ -74,6 +69,7 @@ void callback(char* topic, byte* message, unsigned int length) {
   }
 }
 
+boolean wifiConnected = false;
 void setup_wifi() {
   delay(10);
   // We start by connecting to a WiFi network
@@ -95,7 +91,12 @@ void setup_wifi() {
 }
 
 void setup() {
+  beginCode = millis();
   Serial.begin(115200);
+  
+  delay(300);
+  //analogReadResolution(11);
+  //analogSetAttenuation(ADC_6db);
 
   pinMode(4, INPUT); 
   station = new Station();
@@ -129,10 +130,19 @@ bool rain;
 int temp, humidity, pressure, gas;
 
 void loop() {
+
   if (!client.connected()) {
     reconnect();
   }
   client.loop();
+
+  Serial.println("Voltagem: ");
+  valorPin = float(analogRead(35));
+  voltagem = (valorPin / 330.0f) * 4.17f;
+  Serial.println(String(voltagem));
+  Serial.println(String(valorPin));
+
+
 
   long now = millis();
   static char     buf[16];                        // sprintf text buffer
@@ -161,9 +171,12 @@ void loop() {
     doc["humidity"] = float(humidity)/1000.0f;
     doc["pressure"] = float(pressure)/100.0f;
     doc["gas"] = float(gas)/100.0f;
+    doc["volts"] = voltagem;
+    doc["treco"] = valorPin;
 
     String output;
     serializeJson(doc, output);
+    Serial.println(output.c_str());
 
     client.publish("outdoor/main", output.c_str());
  
@@ -185,5 +198,17 @@ void loop() {
     sprintf(buf, "%4d.%02d\n", (int16_t)(gas / 100), (uint8_t)(gas % 100));  // Resistance milliohms
     Serial.print(buf);
 
+    Serial.println("Time for sleep:");
+
   }
+
+  if(voltagem < 3.4)
+  {
+    delay(3000);
+    float sleepTime = (TIME_TO_SLEEP) - ((millis() - beginCode) / 1000);
+    Serial.println(String(sleepTime));
+    esp_sleep_enable_timer_wakeup(sleepTime * uS_TO_S_FACTOR);
+    esp_deep_sleep_start();
+  }
+
 }
