@@ -6,7 +6,7 @@ LightningSensor::LightningSensor(int _interruptPin)
     lightning = new SparkFun_AS3935(AS3935_ADDR);
     lightInt = _interruptPin;
 
-    pinMode(lightInt, INPUT); 
+    //pinMode(lightInt, INPUT); 
 
     if( !lightning->begin() ) { // Initialize the sensor. 
         throw;
@@ -34,6 +34,7 @@ bool LightningSensor::hasData()
         }
         else if(intVal == LIGHTNING_INT)
         {
+            Serial.println("RAIO2!");
             distance = lightning->distanceToStorm(); 
             return true;
         }

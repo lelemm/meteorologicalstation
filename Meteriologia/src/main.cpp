@@ -1,13 +1,110 @@
 #include <Arduino.h>
 #include "station.h"
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+#define WIFI_SSID "LeandroPatricia"
+#define WIFI_PASSWORD "lp010912"
+
+// Raspberry Pi Mosquitto MQTT Broker
+#define MQTT_HOST "192.168.1.30"
+// For a cloud MQTT broker, type the domain name
+//#define MQTT_HOST "example.com"
+#define MQTT_PORT 1883
+
+// Temperature MQTT Topics
+#define MQTT_PUB_LUX "outdoor/lux"
+#define MQTT_PUB_TEMP "outdoor/temperature"
+#define MQTT_PUB_HUM "outdoor/humidity"
+#define MQTT_PUB_PRES "outdoor/pressure"
+#define MQTT_PUB_RAIN "outdoor/rain"
+#define MQTT_PUB_GAS "outdoor/gas"
+#define MQTT_PUB_LIGHTNING "outdoor/lightning/events"
+#define MQTT_PUB_LIGHTNING_DIST "outdoor/lightning/distance"
+
+WiFiClient espClient;
+PubSubClient client(espClient);
 
 Station* station;
 
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("EstacaoMet", "lelemm", "Plllf00!")) {
+      Serial.println("connected");
+      // Subscribe
+      client.subscribe("esp32/output");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void callback(char* topic, byte* message, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+  String messageTemp;
+  
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)message[i]);
+    messageTemp += (char)message[i];
+  }
+  Serial.println();
+
+  // Feel free to add more if statements to control more GPIOs with MQTT
+
+  // If a message is received on the topic esp32/output, you check if the message is either "on" or "off". 
+  // Changes the output state according to the message
+  if (String(topic) == "esp32/output") {
+    Serial.print("Changing output to ");
+    if(messageTemp == "on"){
+      Serial.println("on");
+    }
+    else if(messageTemp == "off"){
+      Serial.println("off");
+    }
+  }
+}
+
+void setup_wifi() {
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
 void setup() {
   Serial.begin(115200);
+
+  pinMode(4, INPUT); 
   station = new Station();
 
+  setup_wifi();
+  client.setServer(MQTT_HOST, MQTT_PORT);
+  client.setCallback(callback);
 }
+
 
 char *ftoa(char *a, double f, int precision)
 {
@@ -24,31 +121,57 @@ char *ftoa(char *a, double f, int precision)
 }
 
 int loopCount = 0;
+long lastMsg = 0;
+long lastRead = 0;
+
+float lux;
+bool rain;
+int temp, humidity, pressure, gas;
+
 void loop() {
-  float lux;
-  bool rain;
-  bool lightning;
-  int lightningDistance;
-  int temp, humidity, pressure, gas;
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  long now = millis();
   static char     buf[16];                        // sprintf text buffer
 
-  if(loopCount % 10 == 0)
-  {
-    Serial.println(F("\nLux\tRain\tRaio\tDist\tTemp\xC2\xB0\x43\tHumid%\tPress\thPa\tAir m"));
+  if(now - lastRead > 100 || lastRead == 0) {
+    station->getData(lux, rain, temp, humidity, pressure, gas);  
+    lastRead = now;
   }
 
-  loopCount++;
-  char chars[16];
-  station->getData(lux, rain, lightning, lightningDistance, temp, humidity, pressure, gas);
+  if (now - lastMsg > 60000 || lastMsg == 0) {
+    lastMsg = now;
+
+    if(loopCount % 10 == 0)
+    {
+      Serial.println(F("\nLux\tRain\tTemp\xC2\xB0\x43\tHumid%\tPress\thPa\tAir m"));
+    }
+
+    loopCount++;
+
+    DynamicJsonDocument doc(1024);
+
+    doc["lux"] = lux;
+    doc["rain"]  = rain;
+
+    doc["temp"] = float(temp)/100.0f;
+    doc["humidity"] = float(humidity)/1000.0f;
+    doc["pressure"] = float(pressure)/100.0f;
+    doc["gas"] = float(gas)/100.0f;
+
+    String output;
+    serializeJson(doc, output);
+
+    client.publish("outdoor/main", output.c_str());
+ 
+    char chars[16];
     sprintf(buf, "%s", ftoa(chars, lux, 0));   // Temp in decidegrees
     Serial.print(buf);
     Serial.print("\t");
     Serial.print(rain == true ? "Y\t" : "N\t");
-    Serial.print(lightning == true ? "Y\t" : "N\t");
-
-    sprintf(buf, "%2d\t",
-            lightningDistance);   // Temp in decidegrees
-    Serial.print(buf);
 
     sprintf(buf, "%3d.%02d\t",
             (int8_t)(temp / 100), (uint8_t)(temp % 100));   // Temp in decidegrees
@@ -62,6 +185,5 @@ void loop() {
     sprintf(buf, "%4d.%02d\n", (int16_t)(gas / 100), (uint8_t)(gas % 100));  // Resistance milliohms
     Serial.print(buf);
 
-
-  delay(500);
+  }
 }
